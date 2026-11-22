@@ -208,6 +208,11 @@ QPushButton#BackBtn:hover {{
     background: rgba(255, 255, 255, 0.12);
     color: #FFFFFF;
 }}
+QPushButton#BackBtn:disabled {{
+    background: rgba(255, 255, 255, 0.025);
+    color: #475569;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+}}
 
 QTextBrowser#BodyViewer {{
     background: rgba(15, 19, 27, 0.85);

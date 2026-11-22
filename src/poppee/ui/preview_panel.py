@@ -293,7 +293,10 @@ class PreviewPanel(QWidget):
         self._status_override: str = ""
         self._demo_mode = False
 
-        # Active reader message state
+        # Active reader message & navigation queue state
+        self._visible_entries: list[tuple[str, Message]] = []
+        self._reader_queue: list[tuple[str, Message]] = []
+        self._reader_index: int = -1
         self._reading_account: str | None = None
         self._reading_message: Message | None = None
         self._reader_otp_code: str | None = None
@@ -451,12 +454,19 @@ class PreviewPanel(QWidget):
         nav.addWidget(back_btn)
         nav.addStretch(1)
 
-        self._reader_mark_btn = QPushButton("✓ Lida")
-        self._reader_mark_btn.setObjectName("BackBtn")
-        self._reader_mark_btn.setToolTip("Marcar mensagem como lida")
-        self._reader_mark_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._reader_mark_btn.clicked.connect(self._on_reader_mark_read)
-        nav.addWidget(self._reader_mark_btn)
+        self._btn_prev = QPushButton("‹ Anterior")
+        self._btn_prev.setObjectName("BackBtn")
+        self._btn_prev.setToolTip("Mensagem anterior")
+        self._btn_prev.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_prev.clicked.connect(self._on_reader_prev)
+        nav.addWidget(self._btn_prev)
+
+        self._btn_next = QPushButton("Próximo ›")
+        self._btn_next.setObjectName("BackBtn")
+        self._btn_next.setToolTip("Marcar como lida e ir para a próxima")
+        self._btn_next.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_next.clicked.connect(self._on_reader_next)
+        nav.addWidget(self._btn_next)
 
         open_btn = QPushButton("Gmail ↗")
         open_btn.setObjectName("BackBtn")
@@ -521,10 +531,28 @@ class PreviewPanel(QWidget):
         self._reading_account = None
         self._reading_message = None
         self._reader_otp_code = None
+        self._reader_queue = []
+        self._reader_index = -1
         self._stack.setCurrentIndex(0)
 
-    def open_reader(self, account_email: str, message: Message) -> None:
+    def open_reader(
+        self, account_email: str, message: Message, *, reset_queue: bool = True
+    ) -> None:
         """Switch to inline reader view and show loading state while full body is fetched."""
+        if reset_queue:
+            self._reader_queue = list(self._visible_entries)
+            self._reader_index = next(
+                (
+                    i
+                    for i, (em, m) in enumerate(self._reader_queue)
+                    if em.lower() == account_email.lower() and m.id == message.id
+                ),
+                -1,
+            )
+            if self._reader_index == -1:
+                self._reader_queue = [(account_email, message)]
+                self._reader_index = 0
+
         self._reading_account = account_email
         self._reading_message = message
         self._reader_subject.setText(message.subject)
@@ -535,9 +563,7 @@ class PreviewPanel(QWidget):
             else message.sender
         )
         self._reader_meta.setText(f"{sender_info}  ·  {when}")
-        self._reader_mark_btn.setVisible(message.unread)
-        self._reader_mark_btn.setEnabled(True)
-        self._reader_mark_btn.setText("✓ Lida")
+        self._sync_reader_nav_buttons()
 
         # Show OTP banner immediately if already detectable from subject/snippet.
         self._set_reader_otp(extract_verification_code(message.subject, message.snippet))
@@ -545,6 +571,16 @@ class PreviewPanel(QWidget):
             "<div style='color:#94A3B8; padding:12px 0;'>Carregando mensagem…</div>"
         )
         self._stack.setCurrentIndex(1)
+
+    def _sync_reader_nav_buttons(self) -> None:
+        has_prev = self._reader_index > 0
+        has_next = 0 <= self._reader_index < len(self._reader_queue) - 1
+        self._btn_prev.setEnabled(has_prev)
+        self._btn_next.setEnabled(has_next)
+        if has_next and self._reading_message and self._reading_message.unread:
+            self._btn_next.setToolTip("Marcar como lida e ir para a próxima")
+        else:
+            self._btn_next.setToolTip("Próxima mensagem")
 
     def show_message_body(self, account_email: str, message_id: str, body: MessageBody) -> None:
         if (
@@ -591,11 +627,29 @@ class PreviewPanel(QWidget):
         self._otp_banner_btn.setText("✓ Copiado!")
         QTimer.singleShot(1600, lambda: self._otp_banner_btn.setText("📋 Copiar código"))
 
-    def _on_reader_mark_read(self) -> None:
-        if self._reading_account and self._reading_message:
-            self._reader_mark_btn.setEnabled(False)
-            self._reader_mark_btn.setText("…")
+    def _on_reader_prev(self) -> None:
+        if self._reader_index <= 0:
+            return
+        self._reader_index -= 1
+        email, msg = self._reader_queue[self._reader_index]
+        self.open_reader(email, msg, reset_queue=False)
+        self.message_selected.emit(email, msg)
+
+    def _on_reader_next(self) -> None:
+        if not (0 <= self._reader_index < len(self._reader_queue) - 1):
+            return
+        # Mark current message as read when advancing to the next one.
+        if self._reading_account and self._reading_message and self._reading_message.unread:
+            from dataclasses import replace
+
+            read_msg = replace(self._reading_message, unread=False)
+            self._reader_queue[self._reader_index] = (self._reading_account, read_msg)
             self.mark_read_requested.emit(self._reading_account, self._reading_message.id)
+
+        self._reader_index += 1
+        email, msg = self._reader_queue[self._reader_index]
+        self.open_reader(email, msg, reset_queue=False)
+        self.message_selected.emit(email, msg)
 
     def _on_reader_open_gmail(self) -> None:
         if self._reading_account and self._reading_message:
@@ -653,16 +707,6 @@ class PreviewPanel(QWidget):
             r.account.key == self._selected_account for r in self._results
         ):
             self._selected_account = None
-        # Update reader mark-as-read button if current message was just marked read.
-        if self._reading_account and self._reading_message:
-            still_unread = any(
-                m.id == self._reading_message.id
-                for r in self._results
-                if r.account.email.lower() == self._reading_account.lower()
-                for m in r.recent
-            )
-            if not still_unread:
-                self._reader_mark_btn.setVisible(False)
         self._render()
 
     def show_animated(self, x: int, y: int) -> None:
@@ -884,6 +928,7 @@ class PreviewPanel(QWidget):
             for m in msgs:
                 entries.append((r, m))
         entries.sort(key=lambda pair: pair[1].timestamp, reverse=True)
+        self._visible_entries = [(r.account.email, m) for r, m in entries]
 
         now = time.time()
         show_tag = multi and self._selected_account is None
