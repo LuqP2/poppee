@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,8 +22,8 @@ TEMPLATE = """\
 # How often to check each account, in seconds (minimum 30).
 poll_interval = 120
 
-# Show desktop notifications for new mail.
-notifications = true
+# Show desktop notifications for new mail (off by default; the floating widget shows unread mail).
+notifications = false
 
 # If more than this many new messages arrive for one account in a single
 # check, show one summary notification instead of one per message.
@@ -81,7 +83,7 @@ class Config:
     client_secret_file: Path
     accounts: list[Account] = field(default_factory=list)
     poll_interval: int = 120
-    notifications: bool = True
+    notifications: bool = False
     max_notifications: int = 3
     notify_existing_on_start: bool = False
     click_to_open: bool = True
@@ -122,7 +124,7 @@ def parse(data: dict, base_dir: Path, path: Path | None = None) -> Config:
         client_secret_file=client_secret,
         accounts=_parse_accounts(data.get("accounts", [])),
         poll_interval=poll_interval,
-        notifications=_get(data, "notifications", bool, True),
+        notifications=_get(data, "notifications", bool, False),
         max_notifications=max_notifications,
         notify_existing_on_start=_get(data, "notify_existing_on_start", bool, False),
         click_to_open=_get(data, "click_to_open", bool, True),
@@ -186,6 +188,55 @@ def write_template(path: Path) -> bool:
 def _toml_str(value: str) -> str:
     # JSON string escapes are a subset of TOML basic-string escapes.
     return json.dumps(value, ensure_ascii=False)
+
+
+def _toml_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def save(path: Path, cfg: Config) -> None:
+    """Serialize ``cfg`` to ``path`` atomically as clean, readable TOML."""
+    try:
+        rel_secret = cfg.client_secret_file.relative_to(path.parent)
+        secret_str = str(rel_secret)
+    except ValueError:
+        secret_str = str(cfg.client_secret_file)
+
+    lines = [
+        "# Poppee configuration.",
+        "",
+        f"poll_interval = {max(MIN_POLL_INTERVAL, int(cfg.poll_interval))}",
+        f"notifications = {_toml_bool(cfg.notifications)}",
+        f"max_notifications = {max(0, int(cfg.max_notifications))}",
+        f"notify_existing_on_start = {_toml_bool(cfg.notify_existing_on_start)}",
+        f"click_to_open = {_toml_bool(cfg.click_to_open)}",
+        f"client_secret_file = {_toml_str(secret_str)}",
+    ]
+
+    for acc in cfg.accounts:
+        lines.extend(
+            [
+                "",
+                "[[accounts]]",
+                f"name = {_toml_str(acc.name)}",
+                f"email = {_toml_str(acc.email)}",
+                f"query = {_toml_str(acc.query)}",
+                f"notify = {_toml_bool(acc.notify)}",
+                f"enabled = {_toml_bool(acc.enabled)}",
+            ]
+        )
+
+    payload = "\n".join(lines) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def append_account(path: Path, email: str, name: str | None = None, query: str | None = None):

@@ -27,6 +27,12 @@ class FakeSession:
             raise self.exc
         return self.routes[url]
 
+    def post(self, url, json=None, timeout=None):
+        self.calls.append((url, json))
+        if self.exc:
+            raise self.exc
+        return self.routes[url]
+
 
 def test_unread_ids():
     session = FakeSession(
@@ -100,3 +106,29 @@ def test_refresh_and_network_errors():
 
 def test_inbox_url():
     assert inbox_url("a@gmail.com") == "https://mail.google.com/mail/?authuser=a%40gmail.com#inbox"
+
+
+def test_message_read_label_and_mark_as_read():
+    payload = {"id": "m2", "labelIds": ["INBOX"]}
+    session = FakeSession(
+        {
+            API_ROOT + "/messages/m2": FakeResponse(200, payload),
+            API_ROOT + "/messages/m2/modify": FakeResponse(
+                200, {"id": "m2", "labelIds": ["INBOX"]}
+            ),
+        }
+    )
+    client = GmailClient(session)
+    assert client.message("m2").unread is False
+    client.mark_as_read("m2")
+    assert session.calls[-1] == (API_ROOT + "/messages/m2/modify", {"removeLabelIds": ["UNREAD"]})
+
+    forbidden = FakeSession(
+        {
+            API_ROOT + "/messages/m2/modify": FakeResponse(
+                403, {"error": {"message": "Insufficient Permission"}}
+            )
+        }
+    )
+    with pytest.raises(AuthError, match="gmail.modify"):
+        GmailClient(forbidden).mark_as_read("m2")

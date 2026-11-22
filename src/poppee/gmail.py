@@ -1,4 +1,4 @@
-"""Minimal Gmail REST API client (just what a notifier needs)."""
+"""Minimal Gmail REST API client (just what a notifier/widget needs)."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ class AuthError(GmailError):
 
 class Session(Protocol):
     def get(self, url: str, params=None, timeout: float | None = None): ...
+    def post(self, url: str, json=None, timeout: float | None = None): ...
 
 
 def inbox_url(email: str) -> str:
@@ -39,6 +40,7 @@ class Message:
     subject: str
     snippet: str
     timestamp: float  # seconds since the epoch, when Gmail received it
+    unread: bool = True
 
     def url(self, account_email: str) -> str:
         return f"https://mail.google.com/mail/?authuser={quote(account_email)}#all/{self.thread_id}"
@@ -48,13 +50,27 @@ class Message:
 
     @classmethod
     def from_dict(cls, data: dict) -> Message:
-        return cls(**{k: data[k] for k in cls.__dataclass_fields__})
+        kwargs = {k: data[k] for k in cls.__dataclass_fields__ if k in data}
+        return cls(**kwargs)
 
 
 class GmailClient:
     def __init__(self, session: Session, timeout: float = 30):
         self.session = session
         self.timeout = timeout
+
+    def _handle_response(self, resp, *, permission_hint: str | None = None) -> dict:
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json()["error"]["message"]
+            except Exception:
+                detail = resp.text[:200] if hasattr(resp, "text") else ""
+            if resp.status_code == 401:
+                raise AuthError(f"sign-in rejected: {detail}")
+            if resp.status_code == 403 and permission_hint:
+                raise AuthError(f"{permission_hint}: {detail}")
+            raise GmailError(f"HTTP {resp.status_code}: {detail}")
+        return resp.json()
 
     def _get(self, path: str, params=None) -> dict:
         try:
@@ -63,16 +79,16 @@ class GmailClient:
             raise AuthError(f"sign-in expired or revoked ({e}) - run `poppee add-account`") from e
         except (requests.RequestException, TransportError) as e:
             raise GmailError(f"network error: {e}") from e
+        return self._handle_response(resp)
 
-        if resp.status_code >= 400:
-            try:
-                detail = resp.json()["error"]["message"]
-            except Exception:
-                detail = resp.text[:200] if hasattr(resp, "text") else ""
-            if resp.status_code == 401:
-                raise AuthError(f"sign-in rejected: {detail}")
-            raise GmailError(f"HTTP {resp.status_code}: {detail}")
-        return resp.json()
+    def _post(self, path: str, body: dict, *, permission_hint: str | None = None) -> dict:
+        try:
+            resp = self.session.post(API_ROOT + path, json=body, timeout=self.timeout)
+        except RefreshError as e:
+            raise AuthError(f"sign-in expired or revoked ({e}) - run `poppee add-account`") from e
+        except (requests.RequestException, TransportError) as e:
+            raise GmailError(f"network error: {e}") from e
+        return self._handle_response(resp, permission_hint=permission_hint)
 
     def email_address(self) -> str:
         return self._get("/profile")["emailAddress"]
@@ -93,6 +109,8 @@ class GmailClient:
             for h in data.get("payload", {}).get("headers", [])
         }
         name, address = parseaddr(headers.get("from", ""))
+        label_ids = data.get("labelIds")
+        is_unread = "UNREAD" in label_ids if isinstance(label_ids, list) else True
         return Message(
             id=data["id"],
             thread_id=data.get("threadId", data["id"]),
@@ -101,4 +119,13 @@ class GmailClient:
             subject=headers.get("subject", "").strip() or "(no subject)",
             snippet=html.unescape(data.get("snippet", "")).strip(),
             timestamp=int(data.get("internalDate", 0)) / 1000,
+            unread=is_unread,
+        )
+
+    def mark_as_read(self, msg_id: str) -> None:
+        """Remove the UNREAD label from ``msg_id``."""
+        self._post(
+            f"/messages/{msg_id}/modify",
+            {"removeLabelIds": ["UNREAD"]},
+            permission_hint="missing gmail.modify permission - run `poppee add-account`",
         )

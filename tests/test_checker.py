@@ -11,6 +11,7 @@ ACCOUNT = Account(email="me@gmail.com", name="Forums")
 
 
 def make_checker(tmp_path, clients, now=5000.0, **config_kwargs):
+    config_kwargs.setdefault("notifications", True)
     cfg = Config(
         client_secret_file=Path("x"),
         accounts=[Account(email=e, name=e.split("@")[0]) for e in clients]
@@ -151,3 +152,20 @@ def test_build_notifications_trims_long_text():
     assert build_notifications(AccountResult(ACCOUNT, new=[long]), max_individual=0)[0].title == (
         "1 new messages · Forums"
     )
+
+
+def test_mark_as_read_updates_results_and_state(tmp_path):
+    client = FakeClient([make_message("2"), make_message("1")])
+    checker, _ = make_checker(tmp_path, client)
+    (res,) = checker.check_all()
+    assert res.unread == 2
+    assert [m.id for m in res.inbox_recent] == ["2", "1"]
+
+    (updated,) = checker.mark_as_read(ACCOUNT.email, "2")
+    assert updated.unread == 1
+    assert [m.id for m in updated.recent] == ["1"]
+    m2 = next(m for m in updated.inbox_recent if m.id == "2")
+    assert m2.unread is False
+    saved = State(tmp_path / "state.json").data["accounts"][ACCOUNT.email]
+    assert saved["unread"] == 1
+    assert [m["id"] for m in saved["recent"]] == ["1"]

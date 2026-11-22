@@ -13,6 +13,7 @@ def test_template_is_valid_and_has_defaults(tmp_path):
     cfg = config.load(path)
     assert cfg.accounts == []
     assert cfg.poll_interval == 120
+    assert cfg.notifications is False
     assert cfg.client_secret_file == tmp_path / "client_secret.json"
     assert cfg.path == path
 
@@ -77,3 +78,41 @@ def test_append_and_remove_account(tmp_path):
     # The comments in the template survive editing.
     assert "poll_interval" in path.read_text()
     tomllib.loads(path.read_text())
+
+
+def test_save_config_roundtrip(tmp_path):
+    path = tmp_path / "config.toml"
+    cfg = config.Config(
+        client_secret_file=tmp_path / "client_secret.json",
+        accounts=[
+            config.Account(
+                email="work@gmail.com",
+                name="Trabalho",
+                query="is:unread in:inbox from:boss@co.com category:primary",
+                notify=False,
+                enabled=True,
+            ),
+            config.Account(
+                email="personal@gmail.com",
+                name="Pessoal",
+                query='is:unread label:"Meu Marcador"',
+                notify=True,
+                enabled=False,
+            ),
+        ],
+        poll_interval=60,
+        notifications=True,
+        max_notifications=5,
+        notify_existing_on_start=True,
+        click_to_open=False,
+        path=path,
+    )
+    config.save(path, cfg)
+    loaded = config.load(path)
+    assert loaded.poll_interval == 60
+    assert loaded.notifications is True
+    assert loaded.max_notifications == 5
+    assert loaded.notify_existing_on_start is True
+    assert loaded.click_to_open is False
+    assert loaded.client_secret_file == tmp_path / "client_secret.json"
+    assert loaded.accounts == cfg.accounts

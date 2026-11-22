@@ -11,8 +11,8 @@ from google.oauth2.credentials import Credentials
 
 from . import paths
 
-# Read-only access is all a notifier needs.
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+# Modify scope allows reading mail and marking messages as read from the widget.
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 
 class AuthSetupError(Exception):
@@ -32,7 +32,8 @@ def load_credentials(email: str) -> Credentials | None:
     path = token_file(email)
     if not path.exists():
         return None
-    return Credentials.from_authorized_user_file(str(path), SCOPES)
+    # Pass scopes=None so existing readonly tokens continue to work until re-authorized.
+    return Credentials.from_authorized_user_file(str(path), scopes=None)
 
 
 def save_credentials(email: str, creds: Credentials) -> Path:

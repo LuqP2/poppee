@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 
@@ -47,6 +47,11 @@ class FakeClient:
             if m.id == msg_id:
                 return m
         raise GmailError("HTTP 404: not found")
+
+    def mark_as_read(self, msg_id):
+        if self.error:
+            raise self.error
+        self.inbox = [replace(m, unread=False) if m.id == msg_id else m for m in self.inbox]
 
 
 class RecordingNotifier:
