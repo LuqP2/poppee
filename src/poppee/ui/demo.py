@@ -1,4 +1,4 @@
-"""Demo mode with realistic mock accounts and messages for fast visual iteration."""
+"""Demo mode with realistic mock accounts, messages, full bodies and OTP codes."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..checker import Checker
 from ..config import Account, Config
-from ..gmail import GmailError, Message
+from ..gmail import GmailError, Message, MessageBody
 from ..state import State
 
 
@@ -21,10 +21,11 @@ class _SilentNotifier:
 
 
 class DemoGmailClient:
-    """In-memory GmailClient replacement supporting unread, inbox_recent, and mark_as_read."""
+    """In-memory GmailClient supporting unread, inbox_recent, bodies and mark_as_read."""
 
-    def __init__(self, messages: list[Message]):
+    def __init__(self, messages: list[Message], bodies: dict[str, MessageBody] | None = None):
         self._messages = list(messages)
+        self._bodies = dict(bodies or {})
 
     def unread_ids(self, query: str, limit: int = 100) -> tuple[list[str], bool]:
         if "is:unread" in query.lower():
@@ -38,6 +39,12 @@ class DemoGmailClient:
             if m.id == msg_id:
                 return m
         raise GmailError(f"Demo message not found: {msg_id}")
+
+    def message_body(self, msg_id: str) -> MessageBody:
+        if msg_id in self._bodies:
+            return self._bodies[msg_id]
+        msg = self.message(msg_id)
+        return MessageBody(id=msg_id, text=f"{msg.subject}\n\n{msg.snippet}")
 
     def mark_as_read(self, msg_id: str) -> None:
         self._messages = [replace(m, unread=False) if m.id == msg_id else m for m in self._messages]
@@ -54,19 +61,21 @@ def build_demo_checker() -> tuple[Checker, Path]:
             id="demo-p1",
             thread_id="tp1",
             sender="GitHub",
-            sender_email="notifications@github.com",
-            subject="[xpoppee] PR #12: Widget flutuante em PySide6 aprovado",
-            snippet="Ótimo trabalho no modo compacto com encaixe na borda. Merge liberado!",
-            timestamp=now - 120,
+            sender_email="noreply@github.com",
+            subject="[GitHub] Seu código de verificação é 482 910",
+            snippet=(
+                "Use o código 482 910 para confirmar seu login no GitHub. Expira em 10 minutos."
+            ),
+            timestamp=now - 90,
             unread=True,
         ),
         Message(
             id="demo-p2",
             thread_id="tp2",
-            sender="Nubank",
-            sender_email="todomundo@nubank.com.br",
-            subject="Sua fatura de novembro fechou",
-            snippet="Confira o resumo da sua fatura com vencimento em 28/11.",
+            sender="Google",
+            sender_email="no-reply@accounts.google.com",
+            subject="Alerta de segurança — confirmação de acesso",
+            snippet="Recebemos uma solicitação de login em um novo dispositivo Windows.",
             timestamp=now - 1400,
             unread=True,
         ),
@@ -91,6 +100,29 @@ def build_demo_checker() -> tuple[Checker, Path]:
             unread=False,
         ),
     ]
+
+    personal_bodies = {
+        "demo-p1": MessageBody(
+            id="demo-p1",
+            text=(
+                "Olá Ana,\n\n"
+                "Seu código de verificação para entrar no GitHub é:\n\n"
+                "482 910\n\n"
+                "Este código expira em 10 minutos. Se você não solicitou este acesso, "
+                "ignore este e-mail."
+            ),
+        ),
+        "demo-p2": MessageBody(
+            id="demo-p2",
+            text=(
+                "Olá Ana,\n\n"
+                "Recebemos uma solicitação de login em um novo dispositivo Windows.\n"
+                "Para confirmar que foi você, informe o código de segurança abaixo:\n\n"
+                "G-839201\n\n"
+                "Equipe de Segurança do Google"
+            ),
+        ),
+    }
 
     work_msgs = [
         Message(
@@ -128,9 +160,25 @@ def build_demo_checker() -> tuple[Checker, Path]:
         ),
     ]
 
+    work_bodies = {
+        "demo-w1": MessageBody(
+            id="demo-w1",
+            text=(
+                "Oi Ana!\n\n"
+                "Subi os ajustes de contraste, bordas e opacidade do widget no Figma.\n"
+                "Destaques:\n"
+                "- Pílula com escala configurável (80% a 180%)\n"
+                "- Painel redimensionável pelas 4 bordas\n"
+                "- Leitor inline com botão de copiar código 2FA\n\n"
+                "Me fala o que achou antes das 17h?\n"
+                "Abraço,\nMarina"
+            ),
+        ),
+    }
+
     clients = {
-        personal.email: DemoGmailClient(personal_msgs),
-        work.email: DemoGmailClient(work_msgs),
+        personal.email: DemoGmailClient(personal_msgs, personal_bodies),
+        work.email: DemoGmailClient(work_msgs, work_bodies),
     }
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="poppee-demo-"))

@@ -222,3 +222,13 @@ def test_invalidate_client_and_mark_as_read_auth_error_evicts_cache(tmp_path):
 
     checker.mark_as_read(ACCOUNT.email, "1")
     assert created == 2
+
+
+def test_fetch_message_body_caches_result(tmp_path):
+    client = FakeClient([make_message("1")])
+    checker, _ = make_checker(tmp_path, client)
+    body1 = checker.fetch_message_body(ACCOUNT.email, "1")
+    body2 = checker.fetch_message_body(ACCOUNT.email, "1")
+    assert body1 == body2
+    assert "Body for Subject 1" in body1.text
+    assert client.fetched.count("body:1") == 1

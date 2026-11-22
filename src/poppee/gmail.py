@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import html
 from dataclasses import asdict, dataclass
 from email.utils import parseaddr
@@ -52,6 +53,49 @@ class Message:
     def from_dict(cls, data: dict) -> Message:
         kwargs = {k: data[k] for k in cls.__dataclass_fields__ if k in data}
         return cls(**kwargs)
+
+
+@dataclass(frozen=True)
+class MessageBody:
+    id: str
+    text: str = ""
+    html: str = ""
+
+
+def _decode_base64url(data: str) -> str:
+    if not data:
+        return ""
+    padded = data + "=" * (-len(data) % 4)
+    try:
+        return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _extract_mime_body(payload: dict) -> tuple[str, str]:
+    """Recursively extract (plain_text, html_text) from a Gmail MIME payload."""
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+
+    def _walk(node: dict) -> None:
+        mime = str(node.get("mimeType", "")).lower()
+        body_data = node.get("body", {}).get("data", "")
+        if body_data:
+            decoded = _decode_base64url(body_data)
+            if mime == "text/plain":
+                plain_parts.append(decoded)
+            elif mime == "text/html":
+                html_parts.append(decoded)
+            elif not node.get("parts"):
+                plain_parts.append(decoded)
+        for child in node.get("parts") or []:
+            if isinstance(child, dict):
+                _walk(child)
+
+    _walk(payload)
+    return "\n".join(p for p in plain_parts if p).strip(), "\n".join(
+        h for h in html_parts if h
+    ).strip()
 
 
 class GmailClient:
@@ -121,6 +165,14 @@ class GmailClient:
             timestamp=int(data.get("internalDate", 0)) / 1000,
             unread=is_unread,
         )
+
+    def message_body(self, msg_id: str) -> MessageBody:
+        """Fetch full MIME message and return decoded plain text and HTML bodies."""
+        data = self._get(f"/messages/{msg_id}", [("format", "full")])
+        text, html_body = _extract_mime_body(data.get("payload", {}))
+        if not text and not html_body:
+            text = html.unescape(data.get("snippet", "")).strip()
+        return MessageBody(id=data.get("id", msg_id), text=text, html=html_body)
 
     def mark_as_read(self, msg_id: str) -> None:
         """Remove the UNREAD label from ``msg_id``."""

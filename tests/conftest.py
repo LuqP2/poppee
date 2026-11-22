@@ -4,7 +4,7 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
-from poppee.gmail import GmailError, Message
+from poppee.gmail import GmailError, Message, MessageBody
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +52,13 @@ class FakeClient:
         if self.error:
             raise self.error
         self.inbox = [replace(m, unread=False) if m.id == msg_id else m for m in self.inbox]
+
+    def message_body(self, msg_id):
+        if self.error:
+            raise self.error
+        self.fetched.append(f"body:{msg_id}")
+        m = self.message(msg_id)
+        return MessageBody(id=msg_id, text=f"Body for {m.subject}")
 
 
 class RecordingNotifier:

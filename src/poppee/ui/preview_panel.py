@@ -1,30 +1,75 @@
-"""Frameless, edge-resizable dark inbox preview panel anchored to the floating bubble."""
+"""Frameless, edge-resizable dark inbox preview panel with inline reader and OTP copy."""
 
 from __future__ import annotations
 
+import html
+import re
 import time
 from typing import Literal
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    QRectF,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QFontMetrics, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStackedWidget,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
 from ..checker import AccountResult
-from ..gmail import Message, inbox_url
+from ..gmail import Message, MessageBody, inbox_url
 from ..preview import format_age
 from ..util import open_url
 from . import theme
+from .otp_detector import extract_verification_code, strip_html
 
 ViewMode = Literal["unread", "recent"]
+
+_STYLE_SCRIPT_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_INLINE_COLOR_RE = re.compile(r"(?:background(?:-color)?|color)\s*:\s*[^;\"']+;?", re.IGNORECASE)
+
+
+def _copy_to_clipboard(text: str) -> None:
+    cb = QApplication.clipboard()
+    if cb is not None:
+        cb.setText(text)
+
+
+def _render_dark_body_html(body: MessageBody) -> str:
+    """Render plain text or sanitized HTML into readable dark-mode HTML for QTextBrowser."""
+    if body.text:
+        escaped = html.escape(body.text)
+        # Auto-link http(s) URLs in plain text.
+        linked = re.sub(
+            r"(https?://[^\s<>&\"']+)",
+            r'<a href="\1" style="color:#93C5FD;">\1</a>',
+            escaped,
+        )
+        return f"<div style='color:#E2E8F0; line-height:1.45; white-space:pre-wrap;'>{linked}</div>"
+    if body.html:
+        cleaned = _STYLE_SCRIPT_RE.sub("", body.html)
+        cleaned = _INLINE_COLOR_RE.sub("", cleaned)
+        return (
+            "<style>a { color: #93C5FD; } body, div, p, td, span { color: #E2E8F0; }</style>"
+            f"<div style='color:#E2E8F0; line-height:1.45;'>{cleaned}</div>"
+        )
+    return "<div style='color:#64748B;'>(Mensagem sem conteúdo de texto)</div>"
 
 
 class ElidedLabel(QLabel):
@@ -58,10 +103,11 @@ class ElidedLabel(QLabel):
 
 
 class MessageCard(QFrame):
-    """Single email preview card with click-to-open and hover mark-as-read button."""
+    """Single email preview card with inline-open, hover mark-as-read, and 1-click OTP copy."""
 
     mark_read_clicked = Signal(str, str)  # account_email, message_id
-    opened = Signal(str)  # url
+    selected = Signal(str, object)  # account_email, Message
+    code_copied = Signal(str)  # code
 
     def __init__(
         self,
@@ -77,6 +123,7 @@ class MessageCard(QFrame):
         super().__init__(parent)
         self.account_email = account_email
         self.message = message
+        self._otp_code = extract_verification_code(message.subject, message.snippet)
         self.setObjectName("MessageCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMouseTracking(True)
@@ -138,17 +185,47 @@ class MessageCard(QFrame):
         )
         root.addWidget(subj_lbl)
 
-        # Row 3: snippet
+        # Row 3: snippet + optional 1-click OTP copy pill
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 0, 0, 0)
+        bottom.setSpacing(6)
+
         if message.snippet:
             snip_lbl = ElidedLabel(message.snippet)
             snip_lbl.setStyleSheet("font-size: 11px; color: #94A3B8;")
-            root.addWidget(snip_lbl)
+            bottom.addWidget(snip_lbl, 1)
+
+        self._otp_btn: QPushButton | None = None
+        if self._otp_code:
+            otp_btn = QPushButton(f"📋 {self._otp_code}")
+            otp_btn.setObjectName("OtpCopyBtn")
+            otp_btn.setToolTip(f"Copiar código {self._otp_code}")
+            otp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            otp_btn.clicked.connect(self._on_copy_otp)
+            bottom.addWidget(otp_btn)
+            self._otp_btn = otp_btn
+
+        if message.snippet or self._otp_code:
+            root.addLayout(bottom)
 
     def _on_mark_read(self) -> None:
         if self._mark_btn is not None:
             self._mark_btn.setEnabled(False)
             self._mark_btn.setText("…")
         self.mark_read_clicked.emit(self.account_email, self.message.id)
+
+    def _on_copy_otp(self) -> None:
+        if not self._otp_code:
+            return
+        _copy_to_clipboard(self._otp_code)
+        self.code_copied.emit(self._otp_code)
+        if self._otp_btn is not None:
+            original = f"📋 {self._otp_code}"
+            self._otp_btn.setText("✓ Copiado")
+            QTimer.singleShot(
+                1600,
+                lambda b=self._otp_btn, txt=original: b.setText(txt) if b else None,
+            )
 
     def enterEvent(self, event) -> None:  # noqa: N802
         if self._mark_btn is not None:
@@ -162,16 +239,14 @@ class MessageCard(QFrame):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            url = self.message.url(self.account_email)
-            open_url(url)
-            self.opened.emit(url)
+            self.selected.emit(self.account_email, self.message)
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
 
 class PreviewPanel(QWidget):
-    """Floating dark inbox preview popover resizable from all edges and corners."""
+    """Floating dark inbox preview popover with inline reader, OTP copy, and edge resizing."""
 
     hover_entered = Signal()
     hover_left = Signal()
@@ -180,6 +255,8 @@ class PreviewPanel(QWidget):
     settings_requested = Signal()
     view_mode_changed = Signal(str)
     mark_read_requested = Signal(str, str)  # account_email, message_id
+    message_selected = Signal(str, object)  # account_email, Message
+    code_copied = Signal(str)  # code
     message_opened = Signal()
     size_committed = Signal(int, int)  # width, height
 
@@ -216,6 +293,11 @@ class PreviewPanel(QWidget):
         self._status_override: str = ""
         self._demo_mode = False
 
+        # Active reader message state
+        self._reading_account: str | None = None
+        self._reading_message: Message | None = None
+        self._reader_otp_code: str | None = None
+
         # Edge-resize state
         self._resize_edges: str = ""
         self._resize_origin_global: QPoint | None = None
@@ -235,6 +317,35 @@ class PreviewPanel(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 11, 12, 10)
         outer.setSpacing(8)
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_list_page())
+        self._stack.addWidget(self._build_reader_page())
+        outer.addWidget(self._stack, 1)
+
+        # Shared footer
+        footer = QHBoxLayout()
+        footer.setContentsMargins(2, 2, 2, 0)
+        footer.setSpacing(8)
+
+        self._status_lbl = QLabel("Aguardando verificação…")
+        self._status_lbl.setStyleSheet("font-size: 11px; color: #64748B;")
+        footer.addWidget(self._status_lbl, 1)
+
+        self._open_inbox_btn = QPushButton("Abrir Gmail ↗")
+        self._open_inbox_btn.setObjectName("LinkBtn")
+        self._open_inbox_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_inbox_btn.clicked.connect(self._open_selected_inbox)
+        footer.addWidget(self._open_inbox_btn)
+
+        outer.addLayout(footer)
+        self._sync_toggle_styles()
+
+    def _build_list_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
 
         # Header: segmented toggle (Não lidas | Recentes) + action buttons
         header = QHBoxLayout()
@@ -296,7 +407,7 @@ class PreviewPanel(QWidget):
         self._btn_settings.clicked.connect(self.settings_requested.emit)
         header.addWidget(self._btn_settings)
 
-        outer.addLayout(header)
+        lay.addLayout(header)
 
         # Account filter bar (visible when 2+ accounts)
         self._accounts_bar = QWidget()
@@ -304,7 +415,7 @@ class PreviewPanel(QWidget):
         self._accounts_layout.setContentsMargins(0, 0, 0, 0)
         self._accounts_layout.setSpacing(6)
         self._accounts_bar.setVisible(False)
-        outer.addWidget(self._accounts_bar)
+        lay.addWidget(self._accounts_bar)
 
         # Scrollable message list
         self._scroll = QScrollArea()
@@ -318,31 +429,178 @@ class PreviewPanel(QWidget):
         self._list_layout.setContentsMargins(0, 0, 2, 0)
         self._list_layout.setSpacing(6)
         self._scroll.setWidget(self._list_host)
-        outer.addWidget(self._scroll, 1)
+        lay.addWidget(self._scroll, 1)
 
-        # Footer
-        footer = QHBoxLayout()
-        footer.setContentsMargins(2, 2, 2, 0)
-        footer.setSpacing(8)
+        return page
 
-        self._status_lbl = QLabel("Aguardando verificação…")
-        self._status_lbl.setStyleSheet("font-size: 11px; color: #64748B;")
-        footer.addWidget(self._status_lbl, 1)
+    def _build_reader_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
 
-        self._open_inbox_btn = QPushButton("Abrir Gmail ↗")
-        self._open_inbox_btn.setObjectName("LinkBtn")
-        self._open_inbox_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._open_inbox_btn.clicked.connect(self._open_selected_inbox)
-        footer.addWidget(self._open_inbox_btn)
+        # Top navigation bar
+        nav = QHBoxLayout()
+        nav.setContentsMargins(0, 0, 0, 0)
+        nav.setSpacing(6)
 
-        outer.addLayout(footer)
-        self._sync_toggle_styles()
+        back_btn = QPushButton("← Voltar")
+        back_btn.setObjectName("BackBtn")
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.clicked.connect(self.show_list_view)
+        nav.addWidget(back_btn)
+        nav.addStretch(1)
+
+        self._reader_mark_btn = QPushButton("✓ Lida")
+        self._reader_mark_btn.setObjectName("BackBtn")
+        self._reader_mark_btn.setToolTip("Marcar mensagem como lida")
+        self._reader_mark_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reader_mark_btn.clicked.connect(self._on_reader_mark_read)
+        nav.addWidget(self._reader_mark_btn)
+
+        open_btn = QPushButton("Gmail ↗")
+        open_btn.setObjectName("BackBtn")
+        open_btn.setToolTip("Abrir esta conversa no Gmail")
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.clicked.connect(self._on_reader_open_gmail)
+        nav.addWidget(open_btn)
+
+        lay.addLayout(nav)
+
+        # Subject & sender meta
+        self._reader_subject = QLabel()
+        self._reader_subject.setWordWrap(True)
+        self._reader_subject.setStyleSheet("font-size: 13px; font-weight: 600; color: #F8FAFC;")
+        lay.addWidget(self._reader_subject)
+
+        self._reader_meta = QLabel()
+        self._reader_meta.setWordWrap(True)
+        self._reader_meta.setStyleSheet("font-size: 11px; color: #94A3B8;")
+        lay.addWidget(self._reader_meta)
+
+        # Highlighted OTP banner (hidden unless a confirmation code is detected)
+        self._otp_banner = QFrame()
+        self._otp_banner.setObjectName("OtpBanner")
+        bl = QHBoxLayout(self._otp_banner)
+        bl.setContentsMargins(10, 7, 10, 7)
+        bl.setSpacing(8)
+
+        self._otp_banner_lbl = QLabel()
+        self._otp_banner_lbl.setStyleSheet("font-size: 12px; font-weight: 600; color: #A7F3D0;")
+        bl.addWidget(self._otp_banner_lbl, 1)
+
+        self._otp_banner_btn = QPushButton("📋 Copiar código")
+        self._otp_banner_btn.setObjectName("OtpCopyBtn")
+        self._otp_banner_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._otp_banner_btn.clicked.connect(self._on_reader_copy_otp)
+        bl.addWidget(self._otp_banner_btn)
+
+        self._otp_banner.setVisible(False)
+        lay.addWidget(self._otp_banner)
+
+        # Body viewer
+        self._body_viewer = QTextBrowser()
+        self._body_viewer.setObjectName("BodyViewer")
+        self._body_viewer.setOpenExternalLinks(False)
+        self._body_viewer.anchorClicked.connect(lambda url: open_url(url.toString()))
+        lay.addWidget(self._body_viewer, 1)
+
+        return page
 
     # Public API ---------------------------------------------------------------
 
     @property
     def is_resizing(self) -> bool:
         return bool(self._resize_edges and self._resize_origin_global is not None)
+
+    @property
+    def is_reading(self) -> bool:
+        return self._stack.currentIndex() == 1
+
+    def show_list_view(self) -> None:
+        self._reading_account = None
+        self._reading_message = None
+        self._reader_otp_code = None
+        self._stack.setCurrentIndex(0)
+
+    def open_reader(self, account_email: str, message: Message) -> None:
+        """Switch to inline reader view and show loading state while full body is fetched."""
+        self._reading_account = account_email
+        self._reading_message = message
+        self._reader_subject.setText(message.subject)
+        when = time.strftime("%d/%m %H:%M", time.localtime(message.timestamp))
+        sender_info = (
+            f"{message.sender} <{message.sender_email}>"
+            if message.sender_email and message.sender_email != message.sender
+            else message.sender
+        )
+        self._reader_meta.setText(f"{sender_info}  ·  {when}")
+        self._reader_mark_btn.setVisible(message.unread)
+        self._reader_mark_btn.setEnabled(True)
+        self._reader_mark_btn.setText("✓ Lida")
+
+        # Show OTP banner immediately if already detectable from subject/snippet.
+        self._set_reader_otp(extract_verification_code(message.subject, message.snippet))
+        self._body_viewer.setHtml(
+            "<div style='color:#94A3B8; padding:12px 0;'>Carregando mensagem…</div>"
+        )
+        self._stack.setCurrentIndex(1)
+
+    def show_message_body(self, account_email: str, message_id: str, body: MessageBody) -> None:
+        if (
+            self._reading_account != account_email
+            or self._reading_message is None
+            or self._reading_message.id != message_id
+        ):
+            return
+        searchable = body.text or strip_html(body.html)
+        code = extract_verification_code(self._reading_message.subject, searchable)
+        if code:
+            self._set_reader_otp(code)
+        self._body_viewer.setHtml(_render_dark_body_html(body))
+
+    def show_message_error(self, account_email: str, message_id: str, error: str) -> None:
+        if (
+            self._reading_account != account_email
+            or self._reading_message is None
+            or self._reading_message.id != message_id
+        ):
+            return
+        fallback = html.escape(self._reading_message.snippet or "")
+        err_html = html.escape(error)
+        self._body_viewer.setHtml(
+            "<div style='color:#FCA5A5; margin-bottom:8px;'>"
+            f"Não foi possível carregar o corpo: {err_html}</div>"
+            f"<div style='color:#CBD5E1;'>{fallback}</div>"
+        )
+
+    def _set_reader_otp(self, code: str | None) -> None:
+        self._reader_otp_code = code
+        if code:
+            self._otp_banner_lbl.setText(f"Código: {code}")
+            self._otp_banner_btn.setText("📋 Copiar código")
+            self._otp_banner.setVisible(True)
+        else:
+            self._otp_banner.setVisible(False)
+
+    def _on_reader_copy_otp(self) -> None:
+        if not self._reader_otp_code:
+            return
+        _copy_to_clipboard(self._reader_otp_code)
+        self.code_copied.emit(self._reader_otp_code)
+        self._otp_banner_btn.setText("✓ Copiado!")
+        QTimer.singleShot(1600, lambda: self._otp_banner_btn.setText("📋 Copiar código"))
+
+    def _on_reader_mark_read(self) -> None:
+        if self._reading_account and self._reading_message:
+            self._reader_mark_btn.setEnabled(False)
+            self._reader_mark_btn.setText("…")
+            self.mark_read_requested.emit(self._reading_account, self._reading_message.id)
+
+    def _on_reader_open_gmail(self) -> None:
+        if self._reading_account and self._reading_message:
+            open_url(self._reading_message.url(self._reading_account))
+            self.message_opened.emit()
 
     def set_custom_size(self, width: int, height: int) -> None:
         w = max(self.MIN_WIDTH, min(self.MAX_WIDTH, int(width)))
@@ -395,6 +653,16 @@ class PreviewPanel(QWidget):
             r.account.key == self._selected_account for r in self._results
         ):
             self._selected_account = None
+        # Update reader mark-as-read button if current message was just marked read.
+        if self._reading_account and self._reading_message:
+            still_unread = any(
+                m.id == self._reading_message.id
+                for r in self._results
+                if r.account.email.lower() == self._reading_account.lower()
+                for m in r.recent
+            )
+            if not still_unread:
+                self._reader_mark_btn.setVisible(False)
         self._render()
 
     def show_animated(self, x: int, y: int) -> None:
@@ -555,6 +823,10 @@ class PreviewPanel(QWidget):
         open_url(inbox_url(target) if target else "https://mail.google.com/")
         self.message_opened.emit()
 
+    def _on_card_selected(self, account_email: str, message: Message) -> None:
+        self.open_reader(account_email, message)
+        self.message_selected.emit(account_email, message)
+
     def _render(self) -> None:
         self._clear_layout(self._accounts_layout)
         self._clear_layout(self._list_layout)
@@ -644,7 +916,8 @@ class PreviewPanel(QWidget):
                     now=now,
                 )
                 card.mark_read_clicked.connect(self.mark_read_requested.emit)
-                card.opened.connect(lambda _url: self.message_opened.emit())
+                card.selected.connect(self._on_card_selected)
+                card.code_copied.connect(self.code_copied.emit)
                 self._list_layout.addWidget(card)
 
         self._list_layout.addStretch(1)
@@ -679,10 +952,15 @@ class PreviewPanel(QWidget):
         super().leaveEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
-        if event.key() == Qt.Key.Key_Escape and self._pinned:
-            self.pin_toggled.emit()
-            event.accept()
-            return
+        if event.key() == Qt.Key.Key_Escape:
+            if self.is_reading:
+                self.show_list_view()
+                event.accept()
+                return
+            if self._pinned:
+                self.pin_toggled.emit()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802

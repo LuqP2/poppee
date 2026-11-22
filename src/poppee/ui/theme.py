@@ -175,6 +175,51 @@ QFrame#ErrorBanner {{
     border-radius: 8px;
 }}
 
+QPushButton#OtpCopyBtn {{
+    background: rgba(16, 185, 129, 0.16);
+    color: #6EE7B7;
+    border: 1px solid rgba(16, 185, 129, 0.42);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}}
+QPushButton#OtpCopyBtn:hover {{
+    background: rgba(16, 185, 129, 0.28);
+    color: #A7F3D0;
+}}
+
+QFrame#OtpBanner {{
+    background: rgba(16, 185, 129, 0.13);
+    border: 1px solid rgba(16, 185, 129, 0.36);
+    border-radius: 9px;
+}}
+
+QPushButton#BackBtn {{
+    background: rgba(255, 255, 255, 0.06);
+    color: #E2E8F0;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+}}
+QPushButton#BackBtn:hover {{
+    background: rgba(255, 255, 255, 0.12);
+    color: #FFFFFF;
+}}
+
+QTextBrowser#BodyViewer {{
+    background: rgba(15, 19, 27, 0.85);
+    color: #E2E8F0;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-family: {FONT_FAMILY};
+    font-size: 12px;
+    selection-background-color: rgba(96, 165, 250, 0.35);
+}}
+
 QMenu {{
     background-color: #161B26;
     color: #E2E8F0;
