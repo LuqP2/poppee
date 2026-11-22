@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from conftest import FakeClient, RecordingNotifier, make_message
 
 from poppee.checker import AccountResult, Checker, build_notifications
@@ -169,3 +170,55 @@ def test_mark_as_read_updates_results_and_state(tmp_path):
     saved = State(tmp_path / "state.json").data["accounts"][ACCOUNT.email]
     assert saved["unread"] == 1
     assert [m["id"] for m in saved["recent"]] == ["1"]
+
+
+def test_filtered_account_preserves_inbox_recent_unread_flag(tmp_path):
+    class FilteredClient(FakeClient):
+        def unread_ids(self, query, limit=100):
+            if "category:primary" in query:
+                return ["1"], False
+            if "is:unread" in query:
+                return ["1", "2"], False
+            return ["1", "2"], False
+
+    client = FilteredClient([make_message("1"), make_message("2")])
+    cfg = Config(
+        client_secret_file=Path("x"),
+        accounts=[Account(email=ACCOUNT.email, name="Forums", query="is:unread category:primary")],
+    )
+    checker = Checker(
+        cfg,
+        State(tmp_path / "state.json"),
+        RecordingNotifier(),
+        client_factory=lambda _a: client,
+    )
+    (res,) = checker.check_all()
+    assert [m.id for m in res.recent] == ["1"]
+    m2 = next(m for m in res.inbox_recent if m.id == "2")
+    assert m2.unread is True
+
+
+def test_invalidate_client_and_mark_as_read_auth_error_evicts_cache(tmp_path):
+    created = 0
+
+    def factory(_acc):
+        nonlocal created
+        created += 1
+        return FakeClient(
+            [make_message("1")], error=AuthError("readonly") if created == 1 else None
+        )
+
+    cfg = Config(client_secret_file=Path("x"), accounts=[ACCOUNT])
+    checker = Checker(
+        cfg, State(tmp_path / "state.json"), RecordingNotifier(), client_factory=factory
+    )
+    checker.invalidate_client(ACCOUNT.email)
+    checker._clients[ACCOUNT.key] = factory(ACCOUNT)
+    assert created == 1
+
+    with pytest.raises(AuthError):
+        checker.mark_as_read(ACCOUNT.email, "1")
+    assert ACCOUNT.key not in checker._clients
+
+    checker.mark_as_read(ACCOUNT.email, "1")
+    assert created == 2

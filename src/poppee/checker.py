@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 
 from . import auth
-from .config import Account, Config
+from .config import DEFAULT_QUERY, Account, Config
 from .gmail import AuthError, GmailClient, GmailError, Message, inbox_url
 from .notify import Notification, Notifier
 from .state import State
@@ -84,6 +84,11 @@ class Checker:
             client = self._clients[account.key] = self.client_factory(account)
         return client
 
+    def invalidate_client(self, account_email: str) -> None:
+        """Drop a cached GmailClient so the next call loads fresh credentials."""
+        with self._lock:
+            self._clients.pop(account_email.lower(), None)
+
     def check_account(self, account: Account) -> AccountResult:
         result = AccountResult(account)
         st = self.state.account(account.email)
@@ -129,12 +134,25 @@ class Checker:
                     except GmailError as e:  # e.g. deleted between list and fetch
                         log.debug("%s: skipping message %s: %s", account.email, msg_id, e)
 
-            # Keep unread flag accurate against the live unread list for cached messages.
-            for msg_id in inbox_ids[:RECENT_LIMIT]:
-                if msg_id in cache:
-                    expected_unread = msg_id in unread_id_set
-                    if cache[msg_id].unread != expected_unread:
-                        cache[msg_id] = replace(cache[msg_id], unread=expected_unread)
+            # Keep unread flag accurate for inbox_recent independently of account filters.
+            normalized_query = account.query.strip().lower()
+            inbox_unread_set: set[str] | None
+            if normalized_query == DEFAULT_QUERY:
+                inbox_unread_set = unread_id_set
+            else:
+                try:
+                    inbox_unread_ids, _ = client.unread_ids(DEFAULT_QUERY, limit=100)
+                    inbox_unread_set = set(inbox_unread_ids)
+                except GmailError as e:
+                    log.debug("%s: inbox unread status lookup skipped: %s", account.email, e)
+                    inbox_unread_set = None
+
+            if inbox_unread_set is not None:
+                for msg_id in inbox_ids[:RECENT_LIMIT]:
+                    if msg_id in cache:
+                        expected_unread = msg_id in inbox_unread_set
+                        if cache[msg_id].unread != expected_unread:
+                            cache[msg_id] = replace(cache[msg_id], unread=expected_unread)
 
             # Messages older than the baseline were already there before Poppee started
             # watching (e.g. old unread mail scrolling into the first page of results).
@@ -180,7 +198,11 @@ class Checker:
             if account is None:
                 raise GmailError(f"Unknown account: {account_email}")
             client = self._client(account)
-            client.mark_as_read(message_id)
+            try:
+                client.mark_as_read(message_id)
+            except AuthError:
+                self._clients.pop(account.key, None)
+                raise
 
             updated: list[AccountResult] = []
             for res in self.results:

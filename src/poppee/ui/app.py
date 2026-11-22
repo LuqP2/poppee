@@ -394,10 +394,12 @@ class WidgetApp:
             )
             dlg.reset_position_requested.connect(self._reset_position)
             dlg.bubble_scale_changed.connect(self._bubble.set_scale)
+            dlg.account_reauthorized.connect(self.checker.invalidate_client)
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 new_cfg = dlg.build_config()
                 if not self.demo:
                     config.save(self.config_path, new_cfg)
+                    dlg.apply_pending_deletions()
                 self.checker.config = new_cfg
                 if not self.demo:
                     self.checker.notifier = get_notifier(new_cfg.click_to_open)

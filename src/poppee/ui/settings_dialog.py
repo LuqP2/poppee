@@ -283,6 +283,7 @@ class SettingsDialog(QDialog):
 
     reset_position_requested = Signal()
     bubble_scale_changed = Signal(float)
+    account_reauthorized = Signal(str)
 
     def __init__(
         self,
@@ -304,6 +305,7 @@ class SettingsDialog(QDialog):
         self._config_path = config_path
         self._demo = demo
         self._accounts: list[Account] = list(cfg.accounts)
+        self._pending_token_deletions: set[str] = set()
         self._client_secret_file: Path = cfg.client_secret_file
         self._oauth_busy = False
         self._oauth_signals = _OAuthSignals()
@@ -616,6 +618,8 @@ class SettingsDialog(QDialog):
             self._sync_account_buttons()
             return
 
+        self._pending_token_deletions.discard(email.lower())
+        self.account_reauthorized.emit(email)
         if not any(a.key == email.lower() for a in self._accounts):
             self._accounts.append(Account(email=email, name=email.split("@")[0]))
             self._footer_status.setText(f"Conta {email} conectada!")
@@ -646,8 +650,16 @@ class SettingsDialog(QDialog):
             return
         self._accounts.pop(row)
         if not self._demo:
-            auth.delete_credentials(acc.email)
+            self._pending_token_deletions.add(acc.email.lower())
         self._refresh_accounts_list()
+
+    def apply_pending_deletions(self) -> None:
+        """Delete OAuth tokens for removed accounts only after settings are saved."""
+        if self._demo:
+            return
+        for email in self._pending_token_deletions:
+            auth.delete_credentials(email)
+        self._pending_token_deletions.clear()
 
     # Result accessors ---------------------------------------------------------
 
