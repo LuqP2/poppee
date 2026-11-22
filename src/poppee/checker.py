@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 
 from . import auth
 from .config import DEFAULT_QUERY, Account, Config
-from .gmail import AuthError, GmailClient, GmailError, Message, inbox_url
+from .gmail import AuthError, GmailClient, GmailError, Message, MessageBody, inbox_url
 from .notify import Notification, Notifier
 from .state import State
 
@@ -61,6 +61,7 @@ class Checker:
         self.clock = clock
         self.results: list[AccountResult] = []
         self._clients: dict[str, GmailClient] = {}
+        self._body_cache: dict[tuple[str, str], MessageBody] = {}
         self._lock = threading.Lock()
 
     def check_all(self, notify: bool = True) -> list[AccountResult]:
@@ -190,6 +191,28 @@ class Checker:
             result.recent = [Message.from_dict(m) for m in st.get("recent", [])]
             result.inbox_recent = [Message.from_dict(m) for m in st.get("inbox_recent", [])]
         return result
+
+    def fetch_message_body(self, account_email: str, message_id: str) -> MessageBody:
+        """Fetch and cache the full decoded body for ``message_id``."""
+        key = (account_email.lower(), message_id)
+        with self._lock:
+            cached = self._body_cache.get(key)
+            if cached is not None:
+                return cached
+            account = self.config.find_account(account_email)
+            if account is None:
+                raise GmailError(f"Unknown account: {account_email}")
+            client = self._client(account)
+            try:
+                body = client.message_body(message_id)
+            except AuthError:
+                self._clients.pop(account.key, None)
+                raise
+            if len(self._body_cache) >= 50:
+                oldest = next(iter(self._body_cache))
+                self._body_cache.pop(oldest, None)
+            self._body_cache[key] = body
+            return body
 
     def mark_as_read(self, account_email: str, message_id: str) -> list[AccountResult]:
         """Mark a message as read in Gmail and update local results + state."""

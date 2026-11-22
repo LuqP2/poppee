@@ -73,6 +73,9 @@ class WidgetApp:
             results_ready = Signal(list)
             checking_changed = Signal(bool)
             status_message = Signal(str)
+            body_ready = Signal(
+                str, str, object, object
+            )  # email, msg_id, MessageBody|None, err|None
 
         app = QApplication.instance() or QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)
@@ -132,6 +135,8 @@ class WidgetApp:
         self._panel.settings_requested.connect(self._open_settings)
         self._panel.view_mode_changed.connect(self._on_view_mode_changed)
         self._panel.mark_read_requested.connect(self._on_mark_read_requested)
+        self._panel.message_selected.connect(self._on_message_selected)
+        self._panel.code_copied.connect(self._on_code_copied)
         self._panel.message_opened.connect(self._on_message_opened)
         self._panel.size_committed.connect(self._on_panel_size_committed)
 
@@ -139,6 +144,7 @@ class WidgetApp:
         self._bridge.results_ready.connect(self._on_results)
         self._bridge.checking_changed.connect(self._on_checking_changed)
         self._bridge.status_message.connect(self._panel.set_status_feedback)
+        self._bridge.body_ready.connect(self._on_body_ready)
 
         # System tray icon (native Qt)
         self._tray: QSystemTrayIcon | None = None
@@ -343,6 +349,26 @@ class WidgetApp:
                 self._bridge.status_message.emit(f"Erro: {e}")
 
         threading.Thread(target=_worker, name="mark-read", daemon=True).start()
+
+    def _on_message_selected(self, account_email: str, message) -> None:
+        def _worker() -> None:
+            try:
+                body = self.checker.fetch_message_body(account_email, message.id)
+                self._bridge.body_ready.emit(account_email, message.id, body, None)
+            except Exception as e:
+                log.warning("Failed to fetch body for %s: %s", message.id, e)
+                self._bridge.body_ready.emit(account_email, message.id, None, str(e))
+
+        threading.Thread(target=_worker, name="fetch-body", daemon=True).start()
+
+    def _on_body_ready(self, account_email: str, message_id: str, body, error) -> None:
+        if error:
+            self._panel.show_message_error(account_email, message_id, str(error))
+        elif body is not None:
+            self._panel.show_message_body(account_email, message_id, body)
+
+    def _on_code_copied(self, code: str) -> None:
+        self._panel.set_status_feedback(f"Código {code} copiado!")
 
     def _check_now(self) -> None:
         self._wake.set()

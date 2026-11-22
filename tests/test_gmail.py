@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 import requests
 from google.auth.exceptions import RefreshError
@@ -132,3 +134,23 @@ def test_message_read_label_and_mark_as_read():
     )
     with pytest.raises(AuthError, match="gmail.modify"):
         GmailClient(forbidden).mark_as_read("m2")
+
+
+def test_message_body_decodes_multipart_mime():
+    plain_b64 = base64.urlsafe_b64encode("Olá, código 482910".encode()).decode()
+    html_b64 = base64.urlsafe_b64encode(b"<p>Ola <b>482910</b></p>").decode()
+    payload = {
+        "id": "m3",
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": plain_b64}},
+                {"mimeType": "text/html", "body": {"data": html_b64}},
+            ],
+        },
+    }
+    session = FakeSession({API_ROOT + "/messages/m3": FakeResponse(200, payload)})
+    body = GmailClient(session).message_body("m3")
+    assert body.id == "m3"
+    assert "482910" in body.text
+    assert "<b>482910</b>" in body.html
