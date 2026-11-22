@@ -15,18 +15,34 @@ VERSION = re.search(
 ICONS = ROOT / "build" / "icons"
 
 if sys.platform == "win32":
-    hidden, icon = ["pystray._win32"], ICONS / "poppee.ico"
+    icon = ICONS / "poppee.ico"
 elif sys.platform == "darwin":
-    hidden, icon = ["pystray._darwin"], ICONS / "poppee.icns"
+    icon = ICONS / "poppee.icns"
 else:
-    hidden, icon = ["pystray._xorg", "pystray._appindicator", "pystray._gtk"], None
+    icon = None
 icon = str(icon) if icon and icon.exists() else None
 
 a = Analysis(
     [str(ROOT / "packaging" / "poppee_entry.py")],
     pathex=[str(ROOT / "src")],
-    hiddenimports=hidden,
-    excludes=["pytest", "IPython"],
+    hiddenimports=[],
+    excludes=[
+        "pytest",
+        "IPython",
+        "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.QtWebEngineQuick",
+        "PySide6.QtMultimedia",
+        "PySide6.QtMultimediaWidgets",
+        "PySide6.Qt3DCore",
+        "PySide6.Qt3DRender",
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
+        "PySide6.QtSql",
+        "PySide6.QtDesigner",
+        "PySide6.QtPdf",
+        "PySide6.QtPdfWidgets",
+    ],
 )
 pyz = PYZ(a.pure)
 

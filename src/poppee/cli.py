@@ -186,6 +186,18 @@ def _headless_loop(checker: Checker) -> None:
 
 
 def cmd_run(args) -> int:
+    if getattr(args, "demo", False):
+        _setup_logging(args.verbose, to_file=False)
+        from .ui import UiUnavailable, WidgetApp
+        from .ui.demo import build_demo_checker
+
+        checker, path = build_demo_checker()
+        try:
+            WidgetApp(checker, path, demo=True).run()
+            return 0
+        except UiUnavailable as e:
+            raise SystemExit(f"error: UI unavailable ({e})") from e
+
     _setup_logging(args.verbose, to_file=True)
     path = _config_path(args)
     if config.write_template(path):
@@ -201,15 +213,20 @@ def cmd_run(args) -> int:
     if not cfg.accounts:
         log.warning("No accounts configured yet - run `poppee add-account`")
     if not args.no_tray:
-        from .tray import TrayApp, TrayUnavailable
+        from .ui import UiUnavailable, WidgetApp
 
         try:
-            TrayApp(checker, path).run()
+            WidgetApp(checker, path).run()
             return 0
-        except TrayUnavailable as e:
-            log.warning("Tray icon unavailable (%s); continuing without it", e)
+        except UiUnavailable as e:
+            log.warning("Floating widget UI unavailable (%s); continuing headless", e)
     _headless_loop(checker)
     return 0
+
+
+def cmd_demo(args) -> int:
+    args.demo = True
+    return cmd_run(args)
 
 
 def cmd_preview(args) -> int:
@@ -297,9 +314,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--show", type=int, default=3, metavar="N", help="messages to list per account")
     p.set_defaults(func=cmd_check)
 
-    p = sub.add_parser("run", help="run in the background with a tray icon (default)")
-    p.add_argument("--no-tray", action="store_true", help="no tray icon, notifications only")
+    p = sub.add_parser("run", help="run in the background with the floating widget (default)")
+    p.add_argument(
+        "--no-tray",
+        "--headless",
+        dest="no_tray",
+        action="store_true",
+        help="run headless without GUI, notifications only",
+    )
+    p.add_argument(
+        "--demo",
+        action="store_true",
+        help="launch the floating widget with mock accounts and sample messages",
+    )
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("demo", help="launch the floating widget with mock data for visual preview")
+    p.set_defaults(func=cmd_demo)
 
     p = sub.add_parser("preview", help="show the recent-mail window")
     p.add_argument("--text", action="store_true", help="print to the terminal instead")

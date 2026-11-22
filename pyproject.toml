@@ -29,7 +29,7 @@ dependencies = [
     "google-auth-oauthlib>=1.0",
     "requests>=2.31",
     "platformdirs>=4.0",
-    "pystray>=0.19.5",
+    "PySide6>=6.7",
     "Pillow>=10.1",
 ]
 
@@ -59,7 +59,14 @@ addopts = "-ra"
 
 [tool.coverage.run]
 source = ["poppee"]
-omit = ["*/poppee/tray.py", "*/poppee/__main__.py"]
+omit = [
+    "*/poppee/__main__.py",
+    "*/poppee/ui/app.py",
+    "*/poppee/ui/bubble.py",
+    "*/poppee/ui/preview_panel.py",
+    "*/poppee/ui/settings_dialog.py",
+    "*/poppee/ui/theme.py",
+]
 
 [tool.ruff]
 line-length = 100
